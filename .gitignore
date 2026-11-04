@@ -1,0 +1,4 @@
+.env
+ampric.db
+.venv/
+__pycache__/
