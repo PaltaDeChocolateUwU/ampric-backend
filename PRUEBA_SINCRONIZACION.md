@@ -1,8 +1,6 @@
 
-# Prueba de sincronización automática AMPRIC
+## Prueba final de sincronización
 
-Esta es una prueba para verificar que los cambios realizados
-desde Visual Studio Code se publiquen automáticamente en GitHub.
+Esta modificación se realizó directamente desde Visual Studio Code.
 
-Proyecto: AMPRIC
-Estado: Sincronización en prueba
+Estado de la prueba: ACTUALIZACIÓN AUTOMÁTICA CONFIRMADA.
