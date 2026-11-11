@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from asistente import responder
 from auth import usuario_actual
 from db import Alerta, Cultivo, Dispositivo, Lectura, ahora_utc, get_db
-from reglas import evaluar_alertas
+from reglas import evaluar_alertas, CONFIG_DEFECTO
 
 Etapa = Literal["germinacion", "vegetativo", "floracion"]
 
@@ -23,6 +23,7 @@ class CultivoOut(BaseModel):
     id: str
     nombre: str
     etapa: Etapa
+    alertas_config: dict[str, bool] = Field(default_factory=dict)
     ultimoContacto: Optional[str] = None  # última vez que algún kit de este cultivo envió datos
 
 
@@ -34,6 +35,7 @@ class CultivoIn(BaseModel):
 class CultivoPatch(BaseModel):
     nombre: Optional[str] = Field(default=None, min_length=1, max_length=100)
     etapa: Optional[Etapa] = None
+    alertas_config: Optional[dict[str, bool]] = None
 
 
 class DispositivoIn(BaseModel):
@@ -68,7 +70,7 @@ class LecturaOut(BaseModel):
 class AlertaOut(BaseModel):
     id: str
     cultivoId: str
-    tipo: Literal["riego", "hongos"]
+    tipo: Literal["riego", "hongos", "temperatura", "suelo_humedo"]
     mensaje: str
     fechaHora: str
     estado: Literal["pendiente", "atendida", "descartada"]
@@ -85,6 +87,7 @@ class MensajeIn(BaseModel):
 
 
 class ContextoIn(BaseModel):
+    nombre: str = Field(default="Planta seleccionada", max_length=100)
     etapa: Etapa
     humedadSuelo: Optional[float] = None
     temperatura: Optional[float] = None
@@ -134,6 +137,7 @@ def contactos(db: Session, ids: List[int]) -> dict:
 def cultivo_out(c: Cultivo, contacto: Optional[datetime]) -> CultivoOut:
     return CultivoOut(
         id=str(c.id), nombre=c.nombre, etapa=c.etapa,
+        alertas_config={**CONFIG_DEFECTO, **(c.alertas_config or {})},
         ultimoContacto=a_iso(contacto) if contacto else None,
     )
 
@@ -155,7 +159,10 @@ def alerta_out(a: Alerta) -> AlertaOut:
 
 @app.get("/salud")
 def salud():
-    return {"estado": "ok"}
+    return {
+        "estado": "ok",
+        "version": "AMPRIC-CHAT-NUEVO-2026"
+    }
 
 
 # ---------------- Kit (ESP32): se identifica con la clave de SU dispositivo ----------------
@@ -209,6 +216,11 @@ def actualizar_cultivo(cid: int, body: CultivoPatch, uid: str = Depends(usuario_
         c.etapa = body.etapa
     if body.nombre is not None:
         c.nombre = body.nombre.strip()
+    if body.alertas_config is not None:
+        # solo claves conocidas, para que nadie guarde basura en el JSON
+        validas = {k: v for k, v in body.alertas_config.items() if k in CONFIG_DEFECTO}
+        # diccionario NUEVO: SQLAlchemy no detecta cambios si se modifica el JSONB en el lugar
+        c.alertas_config = {**CONFIG_DEFECTO, **(c.alertas_config or {}), **validas}
     db.commit()
     return cultivo_out(c, contactos(db, [c.id]).get(c.id))
 
@@ -271,40 +283,75 @@ def lectura_actual(cid: int, uid: str = Depends(usuario_actual), db: Session = D
     return lectura_out(u) if u else None
 
 
+
 @app.get("/cultivos/{cid}/lecturas", response_model=List[LecturaOut])
 def lecturas(
     cid: int,
     rango: Literal["dia", "semana", "mes"] = "dia",
+    raw: bool = False,
     uid: str = Depends(usuario_actual),
     db: Session = Depends(get_db),
 ):
     cultivo_propio(db, cid, uid)
+
     cantidad, paso = CONFIG_RANGO[rango]
     inicio = ahora_utc() - timedelta(hours=cantidad * paso)
+
     filas = db.scalars(
-        select(Lectura).where(Lectura.cultivo_id == cid, Lectura.fecha_hora >= inicio).order_by(Lectura.fecha_hora)
+        select(Lectura)
+        .where(
+            Lectura.cultivo_id == cid,
+            Lectura.fecha_hora >= inicio,
+        )
+        .order_by(Lectura.fecha_hora.asc(), Lectura.id.asc())
     ).all()
 
+    # Historial detallado: conservar cada medición original.
+    # Se utiliza para gráficas, estadísticas y exportación.
+    if raw:
+        return [lectura_out(f) for f in filas]
+
+    # Compatibilidad con las pantallas que necesitan
+    # lecturas agrupadas.
     cubetas: dict[int, list[Lectura]] = {}
+
     for f in filas:
-        idx = min(int((f.fecha_hora - inicio).total_seconds() // (paso * 3600)), cantidad - 1)
+        idx = min(
+            int(
+                (f.fecha_hora - inicio).total_seconds()
+                // (paso * 3600)
+            ),
+            cantidad - 1,
+        )
         cubetas.setdefault(idx, []).append(f)
 
-    def prom(g: list[Lectura], attr: str) -> Optional[float]:
-        vals = [getattr(x, attr) for x in g if getattr(x, attr) is not None]
-        return round(sum(vals) / len(vals), 1) if vals else None
+    def prom(grupo: list[Lectura], atributo: str) -> Optional[float]:
+        valores = [
+            getattr(x, atributo)
+            for x in grupo
+            if getattr(x, atributo) is not None
+        ]
+        return (
+            round(sum(valores) / len(valores), 1)
+            if valores
+            else None
+        )
 
     salida = [
         LecturaOut(
-            id=str(g[-1].id), cultivoId=str(cid),
-            humedadSuelo=prom(g, "humedad_suelo"), temperatura=prom(g, "temperatura"),
+            id=str(g[-1].id),
+            cultivoId=str(cid),
+            humedadSuelo=prom(g, "humedad_suelo"),
+            temperatura=prom(g, "temperatura"),
             humedadAmbiente=prom(g, "humedad_ambiente"),
             fechaHora=a_iso(inicio + timedelta(hours=idx * paso)),
         )
         for idx, g in sorted(cubetas.items())
     ]
-    if filas:  # el último punto es la lectura real más reciente, no un promedio
+
+    if filas:
         salida[-1] = lectura_out(filas[-1])
+
     return salida
 
 

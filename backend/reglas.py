@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from db import Alerta, Cultivo, Lectura, ahora_utc
 
+SEVERIDAD_EXTRA = {"temperatura": "risk", "suelo_humedo": "warning"}
+
 UMBRAL_RIEGO = 35.0  
 LIMITES_HUMEDAD = {  
     "germinacion": (75, 85),
@@ -14,6 +16,30 @@ LIMITES_HUMEDAD = {
 }
 ETAPA_TXT = {"germinacion": "germinación", "vegetativo": "vegetativo", "floracion": "floración"}
 VENTANA_ALERTA_HORAS = 6
+
+UMBRAL_SUELO_HUMEDO = 85   # % de suelo: exceso de agua
+TEMP_MAX = 30.0            # °C
+TEMP_MIN = 15.0            # °C
+
+CONFIG_DEFECTO = {"riego": True, "hongos": True, "temperatura": True, "suelo_humedo": True}
+
+
+def activa(config: dict | None, clave: str) -> bool:
+    return (config or CONFIG_DEFECTO).get(clave, True)
+
+
+def evaluar_extra(temperatura, humedad_suelo, config) -> list[tuple[str, str]]:
+    """Devuelve [(tipo, mensaje)] de las reglas nuevas."""
+    res = []
+    if activa(config, "temperatura") and temperatura is not None:
+        if temperatura >= TEMP_MAX:
+            res.append(("temperatura", f"Temperatura alta ({temperatura:.1f} °C). Ventila o sombrea la planta."))
+        elif temperatura <= TEMP_MIN:
+            res.append(("temperatura", f"Temperatura baja ({temperatura:.1f} °C). Protege la planta del frío."))
+    if activa(config, "suelo_humedo") and humedad_suelo is not None:
+        if humedad_suelo >= UMBRAL_SUELO_HUMEDO:
+            res.append(("suelo_humedo", f"Suelo muy húmedo ({humedad_suelo:.0f} %). No riegues y revisa el drenaje."))
+    return res
 
 
 def _tramo_actual(lecturas: list[Lectura]) -> list[Lectura]:
@@ -98,6 +124,8 @@ def _crear_si_corresponde(db: Session, cultivo_id: int, tipo: str, severidad: st
 
 
 def evaluar_alertas(db: Session, cultivo: Cultivo) -> None:
+    config = cultivo.alertas_config or CONFIG_DEFECTO
+
     desde = ahora_utc() - timedelta(hours=6)
     lecturas = db.scalars(
         select(Lectura)
@@ -109,21 +137,27 @@ def evaluar_alertas(db: Session, cultivo: Cultivo) -> None:
     ultima = lecturas[-1]
 
     # --- Riego ---
-    horas = estimar_horas_riego(lecturas)
-    sev_riego = estado_riego(ultima.humedad_suelo, horas)
-    
-    if sev_riego != "ok":
-        if ultima.humedad_suelo <= 15.0:
-            msg = f"Suelo extremadamente seco o sensor desconectado ({ultima.humedad_suelo:.0f}%)."
-        elif horas is not None and horas <= 2:
-            msg = f"La humedad del suelo está en {ultima.humedad_suelo:.0f}%. El nivel crítico está muy cerca ({horas:.1f}h)."
-        else:
-            msg = f"La humedad del suelo está en {ultima.humedad_suelo:.0f}%. Se recomienda regar pronto."
-        _crear_si_corresponde(db, cultivo.id, "riego", sev_riego, msg)
+    if activa(config, "riego"):
+        horas = estimar_horas_riego(lecturas)
+        sev_riego = estado_riego(ultima.humedad_suelo, horas)
+
+        if sev_riego != "ok":
+            if ultima.humedad_suelo <= 15.0:
+                msg = f"Suelo extremadamente seco o sensor desconectado ({ultima.humedad_suelo:.0f}%)."
+            elif horas is not None and horas <= 2:
+                msg = f"La humedad del suelo está en {ultima.humedad_suelo:.0f}%. El nivel crítico está muy cerca ({horas:.1f}h)."
+            else:
+                msg = f"La humedad del suelo está en {ultima.humedad_suelo:.0f}%. Se recomienda regar pronto."
+            _crear_si_corresponde(db, cultivo.id, "riego", sev_riego, msg)
 
     # --- Hongos ---
-    sev_hongos = estado_hongos(ultima.humedad_ambiente, cultivo.etapa)
-    if sev_hongos != "ok":
-        limite = LIMITES_HUMEDAD[cultivo.etapa][1 if sev_hongos == "risk" else 0]
-        msg = f"Humedad ambiental alta ({ultima.humedad_ambiente:.0f}% vs límite de {limite}%)."
-        _crear_si_corresponde(db, cultivo.id, "hongos", sev_hongos, msg)
+    if activa(config, "hongos"):
+        sev_hongos = estado_hongos(ultima.humedad_ambiente, cultivo.etapa)
+        if sev_hongos != "ok":
+            limite = LIMITES_HUMEDAD[cultivo.etapa][1 if sev_hongos == "risk" else 0]
+            msg = f"Humedad ambiental alta ({ultima.humedad_ambiente:.0f}% vs límite de {limite}%)."
+            _crear_si_corresponde(db, cultivo.id, "hongos", sev_hongos, msg)
+
+    # --- Temperatura y suelo muy húmedo (NUEVO) ---
+    for tipo, mensaje in evaluar_extra(ultima.temperatura, ultima.humedad_suelo, config):
+        _crear_si_corresponde(db, cultivo.id, tipo, SEVERIDAD_EXTRA[tipo], mensaje)

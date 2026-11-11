@@ -1,4 +1,36 @@
+
+# Archivos de entorno y credenciales
 .env
-ampric.db
+.env.*
+!.env.example
+
+# Metadatos Git internos
+.git-respaldo/
+
+# Configuración local de VS Code
+.vscode/
+
+# Dependencias
+node_modules/
 .venv/
+venv/
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Python
 __pycache__/
+*.pyc
+
+# Bases de datos temporales
+*.db
+*.db-journal
+
+# Scripts locales de diagnóstico
+backend/probar_ia.py
+backend/probar_conexion.py
+
+# Sistema operativo
+.DS_Store
