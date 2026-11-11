@@ -86,9 +86,20 @@ const todasLasAlertas = alertasPorCultivo
       setHistorial(h);
       setAlertas(todasLasAlertas);
       setError(null);
-    } catch {
-      if (n === peticionRef.current) setError("No pudimos cargar los datos del cultivo. Revisa tu conexión.");
-    } finally {
+    
+} catch (e) {
+  const mensaje =
+    e instanceof Error
+      ? e.message
+      : String(e);
+
+  console.error("[AMPRIC] Error cargando cultivos:", e);
+
+  if (n === peticionRef.current) {
+    setError(`No se pudieron cargar los cultivos: ${mensaje}`);
+  }
+}
+ finally {
       if (n === peticionRef.current) setLoading(false);
     }
   }, []);

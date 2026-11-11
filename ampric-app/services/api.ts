@@ -6,7 +6,14 @@ import { supabase } from "@/lib/supabase";
 
 // true = datos de prueba. Cuando tengas el backend, pon false y define EXPO_PUBLIC_API_URL.
 const USE_MOCK = false;
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:8000";
+
+const BASE_URL = (
+  process.env.EXPO_PUBLIC_API_URL ||
+  "https://ampric-backend.onrender.com"
+).replace(/\/+$/, "");
+
+console.log("[AMPRIC] API conectada a:", BASE_URL);
+
 
 export type Rango = "dia" | "semana" | "mes";
 const CONFIG_RANGO: Record<Rango, [number, number]> = { dia: [24, 1], semana: [28, 6], mes: [30, 24] };
@@ -30,7 +37,21 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 45000): 
       await supabase.auth.signOut(); // la sesión venció o no es válida: vuelve al login
       throw new Error("Sesión vencida");
     }
-    if (!res.ok) throw new Error(`Error ${res.status} en ${path}`);
+    
+if (!res.ok) {
+  const detalle = await res.text();
+
+  console.error("[AMPRIC] Error HTTP:", {
+    ruta: path,
+    estado: res.status,
+    detalle: detalle.slice(0, 500),
+  });
+
+  throw new Error(
+    `Error ${res.status} en ${path}: ${detalle.slice(0, 200)}`
+  );
+}
+
     if (res.status === 204) return undefined as T;
     const texto = await res.text();
     return (texto ? JSON.parse(texto) : undefined) as T;
