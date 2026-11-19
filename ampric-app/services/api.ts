@@ -7,10 +7,8 @@ import { supabase } from "@/lib/supabase";
 // true = datos de prueba. Cuando tengas el backend, pon false y define EXPO_PUBLIC_API_URL.
 const USE_MOCK = false;
 
-const BASE_URL = (
-  process.env.EXPO_PUBLIC_API_URL ||
-  "https://ampric-backend.onrender.com"
-).replace(/\/+$/, "");
+
+const BASE_URL = "https://ampric-backend.onrender.com";
 
 console.log("[AMPRIC] API conectada a:", BASE_URL);
 
